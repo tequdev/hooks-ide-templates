@@ -3,7 +3,7 @@
  *
  * Original author: Richard Holland
  *
- * @invoke ttINVOKE
+ * @on_incoming ttINVOKE
  */
 #include "hookapi.h"
 

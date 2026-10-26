@@ -9,9 +9,10 @@
  * The USD/XAH price is the limit of a USD trust line between two oracle
  * accounts.
  *
- * @invoke ttPAYMENT
- * @field oracle_lo Low oracle account (20-byte AccountID hex)
- * @field oracle_hi High oracle account (20-byte AccountID hex)
+ * @on_incoming ttPAYMENT
+ * @emit ttPAYMENT
+ * @param oracle_lo Low oracle account (20-byte AccountID hex)
+ * @param oracle_hi High oracle account (20-byte AccountID hex)
  **/
 
 #include <stdint.h>

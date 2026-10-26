@@ -20,6 +20,26 @@ end to end, locally and in CI.
 - `scripts/` – `build-all.mjs` compiles every template; `node-up.sh` /
   `node-down.sh` run a standalone xahaud in Docker through `xrpld-lab`.
 
+## Comment tags
+
+The IDE reads JSDoc-style tags from the comment block at the top of each Hook
+source and prefills the Deploy pane with them. Space-separated lists may hold
+several values, and a tag may be repeated.
+
+| Tag | Prefills | Example |
+|---|---|---|
+| `@name` | HookName | `@name My Hook` |
+| `@on` | HookOn (both directions) | `@on ttPAYMENT ttINVOKE` |
+| `@on_incoming` | HookOn, incoming transactions only | `@on_incoming ttPAYMENT` |
+| `@on_outgoing` | HookOn, outgoing transactions only | `@on_outgoing ttPAYMENT` |
+| `@emit` | HookCanEmit | `@emit ttPAYMENT` |
+| `@flag` | SetHook Flags (default `hsfOVERRIDE`) | `@flag hsfOVERRIDE hsfCOLLECT` |
+| `@param` | HookParameters | `@param [admin] Account allowed to manage the list` |
+| `@input` | Fields of a Run Script form (`.js` helpers) | `@input {Account} account Account to convert` |
+
+`@on_incoming` / `@on_outgoing` take priority over `@on`. `@field` and
+`@invoke` still work as aliases of `@param` and `@on`.
+
 ## Develop
 
 Requires Node 22, pnpm, Docker and Python 3 (for `xrpld-lab`).

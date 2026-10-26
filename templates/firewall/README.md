@@ -15,9 +15,9 @@ Both hooks need to know about each other before deployment, so that information 
 
 1. Make sure you have at least 4 accounts: Alice (admin), Bob (blacklist hook), Carol (firewall hook) and Carlos (suspect).
 2. Run `decode.js` for Alice and for Bob to get their hex AccountIDs. Parameter values must be hex.
-3. Compile `blacklist.c` and deploy it to Bob with HookOn **Invoke**. Set `admin` to Alice's hex AccountID, or leave it empty to let Bob manage his own list. Note the HookNamespace.
+3. Compile `blacklist.c` and deploy it to Bob (HookOn **Invoke** is preselected). Set `admin` to Alice's hex AccountID, or leave it empty to let Bob manage his own list. Note the HookNamespace.
 4. Run `decode.js` for Carlos as well.
-5. Compile `firewall.c` and deploy it to Carol with HookOn **Payment** and two parameters: `blaccid` = Bob's hex AccountID, `blns` = the blacklist hook namespace (32-byte hex).
+5. Compile `firewall.c` and deploy it to Carol (HookOn **Payment** for incoming transactions is preselected) with two parameters: `blaccid` = Bob's hex AccountID, `blns` = the blacklist hook namespace (32-byte hex).
 6. In the transaction pane send an **Invoke** from Alice to Bob with HookParameters `acc` = Carlos's hex AccountID and `op` = `01`. The debug stream shows "Blacklist: blocked account."
 7. Send a **Payment** from Carlos to Carol with the debug stream filtered on Carol. It is rejected:
    - "Firewall: blocking transaction from blacklisted account." in the debug stream

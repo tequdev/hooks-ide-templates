@@ -3,7 +3,7 @@
  * touches the account it is installed on and leaves a line in the debug
  * stream so you can see it run.
  *
- * @invoke ttPAYMENT
+ * @on ttPAYMENT
  */
 #include "hookapi.h"
 

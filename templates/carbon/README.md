@@ -5,7 +5,7 @@ Carbon sends a percentage of every outgoing payment to a beneficiary account. Wh
 ## Test it in the Hooks Builder
 
 1. Make sure you have at least three accounts: Alice (the hook account), Bob and Carol (the beneficiary).
-2. Get Carol's 20-byte AccountID as hex. Any address decoder works (the firewall template ships a `decode.js` script), or copy it from the Hooks Builder account list.
+2. Run `decode.js` with Carol's address to get her 20-byte AccountID as hex (parameter values must be hex).
 3. Compile `carbon.c`.
 4. Deploy it to Alice with HookOn = Payment and the parameter `carbon_acc` = Carol's hex AccountID.
 5. From the transaction pane, send a Payment from Alice to Bob of more than 0.1 XAH.

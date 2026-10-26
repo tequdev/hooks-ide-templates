@@ -28,7 +28,7 @@ several values, and a tag may be repeated.
 
 | Tag | Prefills | Example |
 |---|---|---|
-| `@name` | HookName | `@name Carbon` |
+| `@name` | HookName | `@name My Hook` |
 | `@on` | HookOn (both directions) | `@on ttPAYMENT ttINVOKE` |
 | `@on_incoming` | HookOn, incoming transactions only | `@on_incoming ttPAYMENT` |
 | `@on_outgoing` | HookOn, outgoing transactions only | `@on_outgoing ttPAYMENT` |

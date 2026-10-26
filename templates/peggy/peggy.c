@@ -174,8 +174,7 @@ int64_t hook(uint32_t reserved)
         source_tag = 0xFFFFFFFFU;
 
     // compare the "From Account" (sfAccount) on the transaction with the account the hook is running on
-    int equal = 0; BUFFER_EQUAL(equal, hook_accid, otxn_accid, 20);
-    if (equal)
+    if (BUFFER_EQUAL_20(hook_accid, otxn_accid))
         accept(SBUF("Peggy: Outgoing transaction"), 20);
 
     // invoice id if present is used for taking over undercollateralized vaults
@@ -278,16 +277,15 @@ int64_t hook(uint32_t reserved)
     if (invoice_id_len != 32)
     {
         // this is normal mode
-        for (int i = 0; GUARD(20), i < 20; ++i)
-            vault_key[i] = otxn_accid[i];
-
+        BYTES20_TO_BUF(vault_key, otxn_accid);
         UINT32_TO_BUF(vault_key + 20, source_tag);
     }
     else
     {
-        // this is the takeover mode
-        for (int i = 0; GUARD(24), i < 24; ++i)
-            vault_key[i] = invoice_id[i];
+        // this is the takeover mode: the first 24 bytes of the invoice id are the vault key
+        *(uint64_t*)(vault_key +  0) = *(uint64_t*)(invoice_id +  0);
+        *(uint64_t*)(vault_key +  8) = *(uint64_t*)(invoice_id +  8);
+        *(uint64_t*)(vault_key + 16) = *(uint64_t*)(invoice_id + 16);
         is_vault_owner = 0;
     }
 
@@ -359,15 +357,9 @@ int64_t hook(uint32_t reserved)
             if (state_set(0,0,SBUF(vault_key)) < 0)
                 rollback(SBUF("Peggy: Could not destroy old vault."), 1);
 
-            // reset the key
-            CLEARBUF(vault_key);
-            for (int i = 0; GUARD(20), i < 20; ++i)
-                vault_key[i] = otxn_accid[i];
-
-            vault_key[20] = (uint8_t)((source_tag >> 24U) & 0xFFU);
-            vault_key[21] = (uint8_t)((source_tag >> 16U) & 0xFFU);
-            vault_key[22] = (uint8_t)((source_tag >>  8U) & 0xFFU);
-            vault_key[23] = (uint8_t)((source_tag >>  0U) & 0xFFU);
+            // reset the key; bytes 24..31 are still zero, only the first 24 bytes are ever written
+            BYTES20_TO_BUF(vault_key, otxn_accid);
+            UINT32_TO_BUF(vault_key + 20, source_tag);
         }
 
         // set / update the vault
@@ -409,18 +401,12 @@ int64_t hook(uint32_t reserved)
             rollback(SBUF("Peggy: Could not dump sfAmount"), 1);
 
         // ensure the issuer is us
-        for (int i = 28; GUARD(20), i < 48; ++i)
-        {
-            if (amount_buffer[i] != hook_accid[i - 28])
-                rollback(SBUF("Peggy: A currency we didn't issue was sent to us."), 1);
-        }
+        if (!BUFFER_EQUAL_20(amount_buffer + 28, hook_accid))
+            rollback(SBUF("Peggy: A currency we didn't issue was sent to us."), 1);
 
         // ensure the currency is PUSD
-        for (int i = 8; GUARD(20), i < 28; ++i)
-        {
-            if (amount_buffer[i] != currency[i - 8])
-                rollback(SBUF("Peggy: A non USD currency was sent to us."), 1);
-        }
+        if (!BUFFER_EQUAL_20(amount_buffer + 8, currency))
+            rollback(SBUF("Peggy: A non USD currency was sent to us."), 1);
 
         TRACEVAR(vault_pusd);
 
@@ -479,15 +465,9 @@ int64_t hook(uint32_t reserved)
             if (state_set(0,0,SBUF(vault_key)) < 0)
                 rollback(SBUF("Peggy: Could not destroy old vault."), 1);
 
-            // reset the key
-            CLEARBUF(vault_key);
-            for (int i = 0; GUARD(20), i < 20; ++i)
-                vault_key[i] = otxn_accid[i];
-
-            vault_key[20] = (uint8_t)((source_tag >> 24U) & 0xFFU);
-            vault_key[21] = (uint8_t)((source_tag >> 16U) & 0xFFU);
-            vault_key[22] = (uint8_t)((source_tag >>  8U) & 0xFFU);
-            vault_key[23] = (uint8_t)((source_tag >>  0U) & 0xFFU);
+            // reset the key; bytes 24..31 are still zero, only the first 24 bytes are ever written
+            BYTES20_TO_BUF(vault_key, otxn_accid);
+            UINT32_TO_BUF(vault_key + 20, source_tag);
         }
 
         // set / update the vault

@@ -105,9 +105,7 @@ int64_t hook(uint32_t reserved)
     if (otxn_field(SBUF(otxn_acc), sfAccount) != 20)
         rollback(SBUF("Carbon: sfAccount missing"), 1);
 
-    int equal = 0;
-    BUFFER_EQUAL(equal, hook_acc, otxn_acc, 20);
-    if (!equal)
+    if (!BUFFER_EQUAL_20(hook_acc, otxn_acc))
         accept(SBUF("Carbon: incoming payment"), 0);
 
     // The beneficiary is an install parameter (HookParameter), set in the SetHook dialog.

@@ -4,6 +4,14 @@
  * Author: Richard Holland
  * Date: 1 Mar 2021
  *
+ * Send XAH to the hook account and receive PUSD (an over-collateralised USD
+ * stable coin issued by the hook account). Send PUSD back to redeem the XAH.
+ * The USD/XAH price is the limit of a USD trust line between two oracle
+ * accounts.
+ *
+ * @invoke ttPAYMENT
+ * @field oracle_lo Low oracle account (20-byte AccountID hex)
+ * @field oracle_hi High oracle account (20-byte AccountID hex)
  **/
 
 #include <stdint.h>
@@ -11,15 +19,143 @@
 
 // your vault starts at 150% collateralization
 #define NEW_COLLATERALIZATION_NUMERATOR 2
-#define NEW_COLLATERALIZATION_DENOMINATOR 3 
+#define NEW_COLLATERALIZATION_DENOMINATOR 3
 
 // at 120% collateralization your vault may be taken over
 #define LIQ_COLLATERALIZATION_NUMERATOR 5
 #define LIQ_COLLATERALIZATION_DENOMINATOR 6
 
+// Transaction Builder output: one emitted Payment template per direction.
+// txn_xah pays XAH (native amount), txn_iou pays PUSD (issued amount).
+// Both carry a DestinationTag and a SourceTag. Only one of them is used
+// per execution.
+// clang-format off
+uint8_t txn_xah[248] =
+{
+/* size, upto, field name               */
+/*    3,    0, tt = Payment             */   0x12U, 0x00U, 0x00U,
+/*    5,    3, flags                    */   0x22U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    5,    8, sequence                 */   0x24U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    5,   13, destinationtag           */   0x2EU, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    5,   18, sourcetag                */   0x23U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    6,   23, firstledgersequence      */   0x20U, 0x1AU, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    6,   29, lastledgersequence       */   0x20U, 0x1BU, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    9,   35, amount                   */   0x61U, 0x40U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x01U,
+/*    9,   44, fee                      */   0x68U, 0x40U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*   35,   53, signingpubkey            */   0x73U, 0x21U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+/*   22,   88, account                  */   0x81U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+/*   22,  110, destination              */   0x83U, 0x14U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*  116,  132, emit details             */
+/*    0,  248,                          */
+};
+
+uint8_t txn_iou[288] =
+{
+/* size, upto, field name               */
+/*    3,    0, tt = Payment             */   0x12U, 0x00U, 0x00U,
+/*    5,    3, flags                    */   0x22U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    5,    8, sequence                 */   0x24U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    5,   13, destinationtag           */   0x2EU, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    5,   18, sourcetag                */   0x23U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    6,   23, firstledgersequence      */   0x20U, 0x1AU, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    6,   29, lastledgersequence       */   0x20U, 0x1BU, 0x00U, 0x00U, 0x00U, 0x00U,
+/*   49,   35, amount                   */   0x61U, 0xD4U, 0x83U, 0x8DU, 0x7EU, 0xA4U, 0xC6U, 0x80U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x55U, 0x53U, 0x44U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*    9,   84, fee                      */   0x68U, 0x40U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*   35,   93, signingpubkey            */   0x73U, 0x21U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+/*   22,  128, account                  */   0x81U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+/*   22,  150, destination              */   0x83U, 0x14U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+/*  116,  172, emit details             */
+/*    0,  288,                          */
+};
+// clang-format on
+
+// TX BUILDER
+#define FLAGS_OUT_XAH (txn_xah + 4U)
+#define DTAG_OUT_XAH (txn_xah + 14U)
+#define STAG_OUT_XAH (txn_xah + 19U)
+#define FLS_OUT_XAH (txn_xah + 25U)
+#define LLS_OUT_XAH (txn_xah + 31U)
+#define AMOUNT_OUT_XAH (txn_xah + 36U)
+#define FEE_OUT_XAH (txn_xah + 45U)
+#define ACCOUNT_OUT_XAH (txn_xah + 90U)
+#define DEST_OUT_XAH (txn_xah + 112U)
+#define EMIT_OUT_XAH (txn_xah + 132U)
+
+#define FLAGS_OUT_IOU (txn_iou + 4U)
+#define DTAG_OUT_IOU (txn_iou + 14U)
+#define STAG_OUT_IOU (txn_iou + 19U)
+#define FLS_OUT_IOU (txn_iou + 25U)
+#define LLS_OUT_IOU (txn_iou + 31U)
+#define AMOUNT_OUT_IOU (txn_iou + 36U)
+#define FEE_OUT_IOU (txn_iou + 85U)
+#define ACCOUNT_OUT_IOU (txn_iou + 130U)
+#define DEST_OUT_IOU (txn_iou + 152U)
+#define EMIT_OUT_IOU (txn_iou + 172U)
+
+#define COPY_20(ptr_to, ptr_from)                                              \
+  do {                                                                         \
+    unsigned char *buf_to = (unsigned char *)ptr_to;                           \
+    unsigned char *buf_from = (unsigned char *)ptr_from;                       \
+    *(uint64_t *)(buf_to + 0) = *(uint64_t *)(buf_from + 0);                   \
+    *(uint64_t *)(buf_to + 8) = *(uint64_t *)(buf_from + 8);                   \
+    *(uint32_t *)(buf_to + 16) = *(uint32_t *)(buf_from + 16);                 \
+  } while (0)
+
+#define SET_UINT32(ptr, value) *((uint32_t *)(ptr)) = FLIP_ENDIAN_32(value);
+
+#define SET_NATIVE_AMOUNT(ptr, amount)                                         \
+  do {                                                                         \
+    uint8_t *b = (ptr);                                                        \
+    *b++ = 0b01000000 + ((amount >> 56) & 0b00111111);                         \
+    *b++ = (amount >> 48) & 0xFFU;                                             \
+    *b++ = (amount >> 40) & 0xFFU;                                             \
+    *b++ = (amount >> 32) & 0xFFU;                                             \
+    *b++ = (amount >> 24) & 0xFFU;                                             \
+    *b++ = (amount >> 16) & 0xFFU;                                             \
+    *b++ = (amount >> 8) & 0xFFU;                                              \
+    *b++ = (amount >> 0) & 0xFFU;                                              \
+  } while (0)
+
+#define SET_ACCOUNT(ptr_to, ptr_from)                                          \
+  {                                                                            \
+    COPY_20(ptr_to, ptr_from);                                                 \
+  }
+
+// Fills in the ledger sequence window, our account, the emit details and the
+// fee. Call it last, after the amount, destination and tags are set.
+#define PREPARE_TXN_XAH()                                                      \
+  do {                                                                         \
+    etxn_reserve(1);                                                           \
+    uint32_t fls = (uint32_t)ledger_seq() + 1;                                 \
+    SET_UINT32(FLS_OUT_XAH, fls);                                              \
+    SET_UINT32(LLS_OUT_XAH, fls + 4);                                          \
+    hook_account(ACCOUNT_OUT_XAH, 20);                                         \
+    etxn_details(EMIT_OUT_XAH, 116U);                                          \
+    int64_t fee = etxn_fee_base(SBUF(txn_xah));                                \
+    SET_NATIVE_AMOUNT(FEE_OUT_XAH, fee);                                       \
+    TRACEHEX(txn_xah);                                                         \
+  } while (0)
+
+#define PREPARE_TXN_IOU()                                                      \
+  do {                                                                         \
+    etxn_reserve(1);                                                           \
+    uint32_t fls = (uint32_t)ledger_seq() + 1;                                 \
+    SET_UINT32(FLS_OUT_IOU, fls);                                              \
+    SET_UINT32(LLS_OUT_IOU, fls + 4);                                          \
+    hook_account(ACCOUNT_OUT_IOU, 20);                                         \
+    etxn_details(EMIT_OUT_IOU, 116U);                                          \
+    int64_t fee = etxn_fee_base(SBUF(txn_iou));                                \
+    SET_NATIVE_AMOUNT(FEE_OUT_IOU, fee);                                       \
+    TRACEHEX(txn_iou);                                                         \
+  } while (0)
+
 int64_t hook(uint32_t reserved)
 {
-    etxn_reserve(1);
+    _g(1, 1);
+
+    // only payments are of interest; anything else passes through
+    if (otxn_type() != ttPAYMENT)
+        accept(SBUF("Peggy: not a payment"), 0);
 
     uint8_t currency[20] = {0,0,0,0, 0,0,0,0, 0,0,0,0, 'U', 'S', 'D', 0,0,0,0,0};
 
@@ -29,7 +165,7 @@ int64_t hook(uint32_t reserved)
 
     uint8_t otxn_accid[20];
     int32_t otxn_accid_len = otxn_field(SBUF(otxn_accid), sfAccount);
-    if (otxn_accid_len < 20)
+    if (otxn_accid_len != 20)
         rollback(SBUF("Peggy: sfAccount field missing!!!"), 10);
 
     // get the source tag if any... negative means it wasn't provided
@@ -80,23 +216,16 @@ int64_t hook(uint32_t reserved)
 
     // execution to here means the invoking account has the required trustline with the required limit
     // now fetch the price oracle accounts and data (which also lives in a trustline)
-    uint8_t oracle_lo[32];
-    int64_t prv = hook_param(SBUF(oracle_lo), (uint32_t)"oracle_lo", 9);
-    if (prv < 20)
-    {
-        TRACEVAR(prv);
-        rollback(SBUF("Peggy: \"oracle_lo\" parameter missing"), 4);
-    }
+    // both parameters must be exactly one 20-byte AccountID
+    uint8_t oracle_lo[20];
+    if (hook_param(SBUF(oracle_lo), "oracle_lo", 9) != 20)
+        rollback(SBUF("Peggy: \"oracle_lo\" parameter missing or not 20 bytes"), 4);
 
-    uint8_t oracle_hi[32];
-    prv = hook_param(SBUF(oracle_hi), (uint32_t)"oracle_hi", 9);
-    if (prv < 20)
-    {
-        TRACEVAR(prv);
-        rollback(SBUF("Peggy: \"oracle_hi\" parameter missing"), 6);
-    }
+    uint8_t oracle_hi[20];
+    if (hook_param(SBUF(oracle_hi), "oracle_hi", 9) != 20)
+        rollback(SBUF("Peggy: \"oracle_hi\" parameter missing or not 20 bytes"), 6);
 
-    if (util_keylet(SBUF(keylet), KEYLET_LINE, oracle_lo, 20, oracle_hi, 20, SBUF(currency)) != 34)
+    if (util_keylet(SBUF(keylet), KEYLET_LINE, SBUF(oracle_lo), SBUF(oracle_hi), SBUF(currency)) != 34)
         rollback(SBUF("Peggy: Internal error, could not generate keylet"), 10);
 
     int64_t slot_no = slot_set(SBUF(keylet), 0);
@@ -249,25 +378,21 @@ int64_t hook(uint32_t reserved)
         if (state_set(SBUF(vault), SBUF(vault_key)) != 16)
             rollback(SBUF("Peggy: Could not set state"), 1);
 
-        // we need to dump the iou amount into a buffer
-        // by supplying -1 as the fieldcode we tell float_sto not to prefix an actual STO header on the field
-        uint8_t amt_out[48];
-        if (float_sto(SBUF(amt_out), 0, 0, 0, 0, pusd_to_send, -1) < 0)
-            rollback(SBUF("Peggy: Could not dump pusd amount into sto"), 1);
+        // fill in the PUSD Payment: destination and tags first
+        SET_ACCOUNT(DEST_OUT_IOU, otxn_accid);
+        SET_UINT32(DTAG_OUT_IOU, source_tag);
+        SET_UINT32(STAG_OUT_IOU, source_tag);
 
-        // set the currency code and issuer in the amount field
-        for (int i = 0; GUARD(20),i < 20; ++i)
-        {
-            amt_out[i + 28] = hook_accid[i];
-            amt_out[i +  8] = currency[i];
-        }
+        // float_sto with field code sfAmount writes the whole 49-byte issued amount
+        // (field header, value, currency, issuer). The template already starts the
+        // amount with that header byte, one byte before AMOUNT_OUT_IOU.
+        if (float_sto(AMOUNT_OUT_IOU - 1, 49, SBUF(currency), SBUF(hook_accid), pusd_to_send, sfAmount) != 49)
+            rollback(SBUF("Peggy: Could not write the PUSD amount"), 1);
 
-        // finally create the outgoing txn
-        uint8_t txn_out[PREPARE_PAYMENT_SIMPLE_TRUSTLINE_SIZE];
-        PREPARE_PAYMENT_SIMPLE_TRUSTLINE(txn_out, amt_out, otxn_accid, source_tag, source_tag);
+        PREPARE_TXN_IOU();
 
         uint8_t emithash[32];
-        if (emit(SBUF(emithash), SBUF(txn_out)) < 0)
+        if (emit(SBUF(emithash), SBUF(txn_iou)) != 32)
             rollback(SBUF("Peggy: Emitting txn failed"), 1);
 
         accept(SBUF("Peggy: Sent you PUSD!"), 0);
@@ -373,17 +498,23 @@ int64_t hook(uint32_t reserved)
         if (state_set(SBUF(vault), SBUF(vault_key)) != 16)
             rollback(SBUF("Peggy: Could not set state"), 1);
 
-        // RH TODO: check the balance of the hook account
+        // fill in the XAH Payment; the amount is a whole number of drops
+        int64_t drops = float_int(xrp_to_send, 6, 0);
+        if (drops < 0)
+            rollback(SBUF("Peggy: Could not convert XAH amount to drops"), 1);
 
-        // finally create the outgoing txn
-        uint8_t txn_out[PREPARE_PAYMENT_SIMPLE_SIZE];
-        PREPARE_PAYMENT_SIMPLE(txn_out, float_int(xrp_to_send, 6, 0), otxn_accid, source_tag, source_tag);
+        SET_NATIVE_AMOUNT(AMOUNT_OUT_XAH, drops);
+        SET_ACCOUNT(DEST_OUT_XAH, otxn_accid);
+        SET_UINT32(DTAG_OUT_XAH, source_tag);
+        SET_UINT32(STAG_OUT_XAH, source_tag);
+
+        PREPARE_TXN_XAH();
 
         uint8_t emithash[32];
-        if (emit(SBUF(emithash), SBUF(txn_out)) < 0)
+        if (emit(SBUF(emithash), SBUF(txn_xah)) != 32)
             rollback(SBUF("Peggy: Emitting txn failed"), 1);
 
-        accept(SBUF("Peggy: Sent you XRP!"), 0);
+        accept(SBUF("Peggy: Sent you XAH!"), 0);
     }
     return 0;
 }

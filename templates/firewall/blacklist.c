@@ -10,7 +10,6 @@
  *
  * Invoke HookParameters: acc = 20-byte AccountID, op = 01 (block) or 00 (unblock).
  *
- * @name Blacklist
  * @on ttINVOKE
  * @param [admin] Account allowed to manage the list (20-byte AccountID hex, optional; defaults to the hook account)
  */

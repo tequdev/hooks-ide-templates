@@ -3,7 +3,6 @@
 /**
  * Carbon: every payment the hook account sends also emits 1% to a beneficiary.
  *
- * @name Carbon
  * @on_outgoing ttPAYMENT
  * @emit ttPAYMENT
  * @param carbon_acc The beneficiary account (20-byte AccountID, hex)

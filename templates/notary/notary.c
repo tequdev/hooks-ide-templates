@@ -19,6 +19,9 @@
 
 #define HEADER "Notary: accepted, waiting for other signers. id: "
 #define HEADER_LEN (sizeof(HEADER) - 1)
+// The hook result while waiting: HEADER followed by the id as 64 hex digits. Initialised in the data
+// segment so the header never has to be copied at run time.
+static uint8_t msg[HEADER_LEN + 64] = HEADER;
 
 // Delete the proposal (nibble F) and every recorded signer weight. `key` is any 32 byte id of the proposal.
 static inline __attribute__((always_inline)) void purge(uint8_t* key)
@@ -62,9 +65,7 @@ int64_t hook(uint32_t reserved)
         NOPE("Notary: could not read the sender account.");
 
     // Hooks also run for outgoing transactions of the account they are installed on.
-    int equal = 0;
-    BUFFER_EQUAL(equal, hook_accid, sender, 20);
-    if (equal)
+    if (BUFFER_EQUAL_20(hook_accid, sender))
         DONE("Notary: outgoing transaction, passing");
 
     // ---- Which mode? ------------------------------------------------------------------------------------
@@ -177,9 +178,7 @@ int64_t hook(uint32_t reserved)
         if (slot(num, 2, result) != 2)
             NOPE("Notary: could not read a signer weight.");
 
-        int same = 0;
-        BUFFER_EQUAL_GUARD(same, signer_account, 20, sender, 20, MAX_SIGNERS);
-        if (same)
+        if (BUFFER_EQUAL_20(signer_account, sender))
         {
             found = i + 1;
             signer_weight = UINT16_FROM_BUF(num);
@@ -231,10 +230,7 @@ int64_t hook(uint32_t reserved)
     if (total < signer_quorum)
     {
         // Return the id as uppercase hex in the hook result so it can be copied from the IDE log.
-        uint8_t msg[HEADER_LEN + 64];
-        uint8_t* ptr = msg;
-        for (int i = 0; GUARD(HEADER_LEN), i < HEADER_LEN; ++i)
-            *ptr++ = HEADER[i];
+        uint8_t* ptr = msg + HEADER_LEN;
         for (int i = 0; GUARD(32), i < 32; ++i)
         {
             uint8_t hi = id[i] >> 4U;
@@ -281,8 +277,7 @@ int64_t hook(uint32_t reserved)
     }
 
     // 2. A hook-emitted transaction has Sequence 0 and a signing key of 33 zero bytes.
-    uint8_t field[35];
-    CLEARBUF(field);
+    uint8_t field[35] = {0};
     field[0] = 0x24U; // sfSequence header, then 4 zero bytes
     EMPLACE(sfSequence, field, 5, "Notary: could not set sfSequence.", 20);
     field[0] = 0x73U; // sfSigningPubKey header, then length 0x21 (33) and 33 zero bytes

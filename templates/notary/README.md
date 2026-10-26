@@ -1,24 +1,40 @@
 # Notary
 
-Notary hook collects signatures for multi-sign transactions. It has two modes of operation:
-1. Attach a proposed transaction to a memo and send it to the hook account
-2. Endorse an already proposed transaction by using its unique ID as invoice ID and sending a 1 drop payment to the hook.
+Notary collects signatures for a multi-signed transaction without blocking the Sequence number of the account.
+It relies on the signer list of the account the hook is installed on. Only accounts on that list can propose or
+endorse a transaction, and the transaction is emitted by the hook once the signer weights reach the quorum.
 
-It relies on the signer list on the account the hook is running on. Only accounts on this list can propose and endorse multisign transactions through this hook.
+It speaks `Invoke` and has two modes:
 
-to test:
-- make sure Hooks Builder has at least 3 accounts: Alice, Bob and Carol
-- set up SignerListSet on Alice's account w/ SignerQuorum 2 to Bob & Carol
-- compile notary.c and deploy it to Alice account
-- open debug stream filtered on Alice and run propose.js; it asks for 2 parameters:
-	1. notary account is where the hook is running, i.e. Alice
-	2. proposer is the account authorized to propose a new transaction, e.g. Bob; the account secret is used to sign the transaction
-- see the hook debug stream, especially that it succeeds and produces and invoice ID (hex-quoted 32 bytes) for the other signers
-- save the invoice ID somewhere
-- run sign.js, as the other authorized user; it asks for 3 parameters:
-	1. notary account is Alice, as above
-	2. approver is the other authorized account, i.e. Carol
-	3. invoice ID is the value saved above
-- see in the hook debug stream (and account balances) that the hook emited the multi-signed transaction
+1. **Propose.** The Invoke carries a `Blob` field holding the serialized unsigned transaction. The hook stores it
+   and logs a 32-byte id.
+2. **Endorse.** The Invoke carries a hook parameter named `id` with the 32-byte id of a proposed transaction.
+
+Send either a Blob or an id, not both. The Blob can be at most 256 bytes, because the proposal is kept in one hook
+state entry. The proposal's `LastLedgerSequence` must be at least 60 ledgers ahead when it is proposed. Up to 8
+signers are supported. The proposer's own weight counts as the first signature.
+
+## Try it in Hooks Builder
+
+1. Make sure Hooks Builder has three accounts: Alice (the notary), Bob and Carol (the signers).
+2. Send a `SignerListSet` from Alice with `SignerQuorum` 2 and Bob and Carol as signers with weight 1 each.
+   The transaction pane has a `SignerListSet` template.
+3. Compile `notary.c` and deploy it to Alice with HookOn `Invoke` (the `@invoke` tag preselects it).
+4. Run `propose.js`. Fill in Alice as the notary account, a destination, an amount in drops and a
+   `LastLedgerSequence` (current ledger + at least 60). It prints the hex Blob.
+5. Open the debug stream filtered on Alice. Send an `Invoke` from Bob to Alice and paste the Blob into its `Blob`
+   field.
+6. The hook result reads `Notary: accepted, waiting for other signers. id: <64 hex>`. Copy the id.
+7. Send an `Invoke` from Carol to Alice with a hook parameter named `id` whose value is that id.
+8. The quorum is reached, the hook result reads `Notary: emitted multisigned txn`, and Alice's payment is emitted.
 
 Modifying the example for more signers is left as an exercise for the reader.
+
+## What changed from the original
+
+- The proposal travels in the `Blob` field of an Invoke instead of a memo of a 1 drop payment.
+- Endorsing uses an `id` hook parameter on an Invoke instead of the InvoiceID of a 1 drop payment, so `sign.js` is
+  gone: the transaction pane does it.
+- `propose.js` is now a pure encoder. It no longer signs or submits anything.
+- The Blob is limited to 256 bytes (it was 4096) because of the hook state value limit.
+- The fee field is written by hand, since the `ENCODE_DROPS` macros are no longer in the bundled headers.

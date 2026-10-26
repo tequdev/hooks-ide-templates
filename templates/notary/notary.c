@@ -1,459 +1,337 @@
 /**
- * Notary.c - An example hook for collecting signatures for multi-sign transactions without blocking sequence number
- * on the account.
+ * Notary.c - Collect signatures for a multi-signed transaction without blocking the account's Sequence number.
  *
- * Author: Richard Holland
- * Date: 11 Feb 2021
+ * Original author: Richard Holland
  *
- **/
-
-#include <stdint.h>
+ * @invoke ttINVOKE
+ */
 #include "hookapi.h"
 
-// maximum tx blob
-#define MAX_MEMO_SIZE 4096
-// LastLedgerSeq must be this far ahead of current to submit a new txn blob
+// An Invoke carries the proposal in a Blob field and the proposal is kept in one hook state entry,
+// whose value may be at most 256 bytes.
+#define MAX_BLOB_SIZE 256
+// Working buffers need room for the fields added before emission (EmitDetails and Fee).
+#define WORK_SIZE 512
+// LastLedgerSequence of a proposal must be at least this far ahead of the current ledger.
 #define MINIMUM_FUTURE_LEDGER 60
+// Signer weights live under state keys ending in nibble 1..MAX_SIGNERS (8), the proposal under nibble F.
+#define MAX_SIGNERS 8
 
+#define HEADER "Notary: accepted, waiting for other signers. id: "
+#define HEADER_LEN (sizeof(HEADER) - 1)
 
-/**
- * Notary - easy multisign with Hooks
- * Two modes of operation:
- * 1. Attach a proposed transaction to a memo and send it to the hook account
- * 2. Endorse an already proposed transaction by using its unique ID as invoice ID and sending a 1 drop payment
- *    to the hook.
- *
- * This hook relies on the signer list on the account the hook is running on.
- * Only accounts on this list can propose and endorse multisign transactions through this Hook.
- */
+// Delete the proposal (nibble F) and every recorded signer weight. `key` is any 32 byte id of the proposal.
+static inline __attribute__((always_inline)) void purge(uint8_t* key)
+{
+    for (uint8_t i = 1; GUARD(MAX_SIGNERS + 1), i <= MAX_SIGNERS + 1; ++i)
+    {
+        key[31] = (key[31] & 0xF0U) + (i <= MAX_SIGNERS ? i : 0x0FU);
+        state_set(0, 0, key, 32);
+    }
+}
+
+// Replace (or insert) one serialized field in the transaction. The result is written to `oth`, then
+// `cur` and `oth` swap roles so that `cur` always holds the latest version of the transaction.
+#define EMPLACE(field, data, data_len, msg, code)                                    \
+    {                                                                                \
+        int64_t r = sto_emplace(oth, WORK_SIZE, cur, tx_len, data, data_len, field); \
+        if (r <= 0)                                                                  \
+            rollback(SBUF(msg), code);                                                \
+        tx_len = r;                                                                  \
+        BUFFER_SWAP(cur, oth);                                                       \
+    }
 
 int64_t hook(uint32_t reserved)
 {
-  TRACESTR("enter hook");
-    // this api fetches the AccountID of the account the hook currently executing is installed on
-    // since hooks can be triggered by both incoming and outgoing transactions this is important to know
-    unsigned char hook_accid[20];
-    hook_account((uint32_t)hook_accid, 20);
+    _g(1, 1); // every hook must import the guard function and use it at least once
 
-    etxn_reserve(1);
+    // This hook only speaks Invoke. Anything else passes untouched.
+    if (otxn_type() != ttINVOKE)
+        DONE("Notary: not an Invoke, passing");
 
-    // next fetch the sfAccount field from the originating transaction
-    uint8_t account_field[20];
-    int32_t account_field_len = otxn_field(SBUF(account_field), sfAccount);
-    if (account_field_len < 20)                                   // negative values indicate errors from every api
-        rollback(SBUF("Notary: sfAccount field missing!!!"), 10); // this code could never be hit in prod
-                                                                  // but it's here for completeness
+    // Reserve the one emitted transaction up front (emission happens once a quorum is reached).
+    if (etxn_reserve(1) != 1)
+        NOPE("Notary: could not reserve an emit slot.");
 
-    // compare the "From Account" (sfAccount) on the transaction with the account the hook is running on
-    int equal = 0; BUFFER_EQUAL(equal, hook_accid, account_field, 20);
+    uint8_t hook_accid[20];
+    if (hook_account(SBUF(hook_accid)) != 20)
+        NOPE("Notary: could not read the hook account.");
+
+    uint8_t sender[20];
+    if (otxn_field(SBUF(sender), sfAccount) != 20)
+        NOPE("Notary: could not read the sender account.");
+
+    // Hooks also run for outgoing transactions of the account they are installed on.
+    int equal = 0;
+    BUFFER_EQUAL(equal, hook_accid, sender, 20);
     if (equal)
-        accept(SBUF("Notary: Outgoing transaction"), 20);
+        DONE("Notary: outgoing transaction, passing");
 
-
-    uint8_t tx_blob[MAX_MEMO_SIZE];
+    // ---- Which mode? ------------------------------------------------------------------------------------
+    // Mode 1 (propose): sfBlob holds the serialized unsigned transaction.
+    // Mode 2 (endorse): hook parameter "id" holds the 32 byte id of an already proposed transaction.
+    uint8_t tx_blob[WORK_SIZE];
     int64_t tx_len = 0;
-    uint8_t invoice_id[32];
 
-    int64_t invoice_id_len = 
-        otxn_field(SBUF(invoice_id), sfInvoiceID);
-
-    // check if an invoice ID was provided... this would be mode 2 above
-    if (invoice_id_len == 32)
+    // otxn_field returns a Blob field with its variable-length prefix (1 byte below 193 bytes of data,
+    // 2 bytes above). Read it with room to spare, then strip the prefix.
+    uint8_t raw[MAX_BLOB_SIZE + 3];
+    int64_t raw_len = otxn_field(SBUF(raw), sfBlob);
+    int64_t blob_len = 0;
+    uint8_t* blob = raw;
+    if (raw_len > 0)
     {
-        // it was, so this is an attempt at endorsing an existing proposed multisig transaction
-
-        // attempt to retrieve the proposed txn blob from the Hook State by setting the last nibble of the invoice ID
-        // to `F` and using it as state key
-        invoice_id[31] = ( invoice_id[31] & 0xF0U ) + 0x0FU;
-        tx_len = state(SBUF(tx_blob), SBUF(invoice_id));
-        if (tx_len < 0)
-            rollback(SBUF("Notary: Received invoice id that did not correspond to a submitted multisig txn."), 1);
-
-
-        // proposed txn exists... but it may have expired so we need to check that first
-        int64_t  lls_lookup = sto_subfield(tx_blob, tx_len, sfLastLedgerSequence);
-        uint8_t* lls_ptr = SUB_OFFSET(lls_lookup) + tx_blob;
-        uint32_t lls_len = SUB_LENGTH(lls_lookup);
-
-        if (lls_len != 4 || UINT32_FROM_BUF(lls_ptr) < ledger_seq())
+        if (raw[0] <= 192)
         {
-            // expired or invalid tx, purging
-            if (state_set(0, 0, SBUF(invoice_id)) < 0)
-               rollback(SBUF("Notary: Error erasing old txn blob."), 40);
-
-            accept(SBUF("Notary: Multisig txn was too old (last ledger seq passed) and was erased."), 1);
+            blob_len = raw[0];
+            blob = raw + 1;
         }
-        // execution to here means the invoice ID corresponded to a currently valid proposed multisig transaction
-        // that exists in the Hook State for this account
-        // however we still need to check if this user is on the signer list before proceeding.
+        else if (raw[0] <= 240)
+        {
+            blob_len = 193 + (((int64_t)raw[0] - 193) << 8) + raw[1];
+            blob = raw + 2;
+        }
+        if (blob_len <= 0 || blob_len > MAX_BLOB_SIZE || (blob - raw) + blob_len != raw_len)
+            NOPE("Notary: the Blob is malformed or larger than 256 bytes.");
+    }
+    else if (raw_len != DOESNT_EXIST)
+        NOPE("Notary: the Blob is malformed or larger than 256 bytes.");
+
+    uint8_t id[32];
+    int64_t id_len = otxn_param(SBUF(id), "id", 2);
+    if (id_len != DOESNT_EXIST && id_len != 32)
+        NOPE("Notary: parameter id must be exactly 32 bytes.");
+
+    if (blob_len == 0 && id_len != 32)
+        DONE("Notary: neither a Blob nor an id, nothing to do");
+    if (blob_len > 0 && id_len == 32)
+        NOPE("Notary: send either a Blob or an id, not both.");
+
+    if (id_len == 32)
+    {
+        // Endorsement: the proposal lives in state under the id, with the last nibble set to F.
+        id[31] = (id[31] & 0xF0U) + 0x0FU;
+        tx_len = state(tx_blob, WORK_SIZE, SBUF(id));
+        if (tx_len < 0)
+            NOPE("Notary: the id does not match a proposed transaction.");
+
+        // The proposal may have expired in the meantime.
+        int64_t lls = sto_subfield(tx_blob, tx_len, sfLastLedgerSequence);
+        if (lls < 0 || SUB_LENGTH(lls) != 4 ||
+            UINT32_FROM_BUF(tx_blob + SUB_OFFSET(lls)) < ledger_seq())
+        {
+            purge(id);
+            DONE("Notary: proposal expired (LastLedgerSequence passed) and was erased");
+        }
     }
 
-
-    // check for the presence of a memo
-    uint8_t memos[MAX_MEMO_SIZE];
-    int64_t memos_len = otxn_field(SBUF(memos), sfMemos);
-
-    uint32_t payload_len = 0;
-    uint8_t* payload_ptr = 0;
-
-    // if there is a memo present then we are in mode 1 above, but we need to ensure the user isn't invoking
-    // undefined behaviour by making them pick either mode 1 or mode 2:
-
-    if (memos_len <= 0 && invoice_id_len <= 0)
-        accept(SBUF("Notary: Incoming txn with neither memo nor invoice ID, passing."), 0);
-
-    if (memos_len > 0 && invoice_id_len > 0)
-        rollback(SBUF("Notary: Incoming txn with both memo and invoice ID, abort."), 0);
-
-    // now check if the sender is on the signer list
-    // we can do this by first creating a keylet that describes the signer list on the hook account
+    // ---- Is the sender a signer? ----------------------------------------------------------------------------
+    // Describe the signer list of the hook account with a keylet, then put that ledger object in a slot.
     uint8_t keylet[34];
-    CLEARBUF(keylet);
     if (util_keylet(SBUF(keylet), KEYLET_SIGNERS, SBUF(hook_accid), 0, 0, 0, 0) != 34)
-        rollback(SBUF("Notary: Internal error, could not generate keylet"), 10);
+        NOPE("Notary: could not generate the signer list keylet.");
 
-    // then requesting XRPLD slot that keylet into a new slot for us
     int64_t slot_no = slot_set(SBUF(keylet), 0);
-    TRACEVAR(slot_no);
     if (slot_no < 0)
-        rollback(SBUF("Notary: Could not set keylet in slot"), 10);
+        NOPE("Notary: the hook account has no signer list.");
 
-    // once slotted we can examine the signer list object
-    // the first field we are interested in is the required quorum to actually pass a multisign transaction
+    // Quorum: the total weight needed to emit.
     int64_t result = slot_subfield(slot_no, sfSignerQuorum, 0);
     if (result < 0)
-        rollback(SBUF("Notary: Could not find sfSignerQuorum on hook account"), 20);
+        NOPE("Notary: could not find SignerQuorum.");
+    // Not called `buf`: the UINTxx_TO_BUF macros declare their own `buf` and would shadow it.
+    uint8_t num[4];
+    if (slot(SBUF(num), result) != 4)
+        NOPE("Notary: could not read SignerQuorum.");
+    uint32_t signer_quorum = UINT32_FROM_BUF(num);
 
-    // we will retrieve the 4 byte quorum into a buffer, in future the will be a shortcut for this
-    uint32_t signer_quorum = 0;
-    uint8_t buf[4];
-    result = slot(SBUF(buf), result);
-    if (result != 4)
-        rollback(SBUF("Notary: Could not fetch sfSignerQuorum from sfSignerEntries."), 80);
-    
-    // then conver the four byte buffer to an unsigned 32 bit integer
-    signer_quorum = UINT32_FROM_BUF(buf);
-    TRACEVAR(signer_quorum); // print the integer for debugging purposes
-
-    // next we want to examine the signer entries, we can do this by loading the signer entries field into a new slot
-    // or in this case we'll just reuse the existing slot since we're done with the parent object.
-    result = slot_subfield(slot_no, sfSignerEntries, slot_no);
-    if (result < 0)
-        rollback(SBUF("Notary: Could not find sfSignerEntries on hook account"), 20);
-
-    // since sfSignerEntries is an array type we can request its length with slot_count
+    // Signer entries: reuse the slot, the parent object is no longer needed.
+    if (slot_subfield(slot_no, sfSignerEntries, slot_no) < 0)
+        NOPE("Notary: could not find SignerEntries.");
     int64_t signer_count = slot_count(slot_no);
     if (signer_count < 0)
-        rollback(SBUF("Notary: Could not fetch sfSignerEntries count"), 30);
+        NOPE("Notary: could not count SignerEntries.");
+    if (signer_count > MAX_SIGNERS)
+        NOPE("Notary: more signers than this hook supports (8).");
 
-
-    // now we need to iterate through all the signers in the signer entries array
-    // if the account that created the originating transaction is in the list then we can pass here
-    // otherwise we must rollback because the account is unauthorized
-    int subslot = 0;
+    // Walk the entries; `found` becomes the 1-based index of the sender, `signer_weight` its weight.
+    int64_t subslot = 0;
     uint8_t found = 0;
     uint16_t signer_weight = 0;
-
-    for (int i = 0; GUARD(8), i < signer_count + 1; ++i)
+    for (int i = 0; GUARD(MAX_SIGNERS), i < signer_count; ++i)
     {
-        // load the next array entry into a slot
         subslot = slot_subarray(slot_no, i, subslot);
         if (subslot < 0)
-            rollback(SBUF("Notary: Could not fetch one of the sfSigner entries [subarray]."), 40);
+            NOPE("Notary: could not read a signer entry.");
 
-        // load the account field from that entry into a new slot
         result = slot_subfield(subslot, sfAccount, 0);
         if (result < 0)
-            rollback(SBUF("Notary: Could not fetch one of the account entires in sfSigner."), 50);
-
-        // dump the new slot into a buffer
+            NOPE("Notary: could not read a signer account.");
         uint8_t signer_account[20];
-        result = slot(SBUF(signer_account), result);
-        if (result != 20)
-            rollback(SBUF("Notary: Could not fetch one of the sfSigner entries [slot sfAccount]."), 60);
+        if (slot(SBUF(signer_account), result) != 20)
+            NOPE("Notary: could not read a signer account.");
 
-        // load the weight field into a new slot
         result = slot_subfield(subslot, sfSignerWeight, 0);
         if (result < 0)
-            rollback(SBUF("Notary: Could not fetch sfSignerWeight from sfSignerEntry."), 70);
+            NOPE("Notary: could not read a signer weight.");
+        if (slot(num, 2, result) != 2)
+            NOPE("Notary: could not read a signer weight.");
 
-        // dump the weight field into a buffer
-        result = slot(buf, 2, result);
-
-        if (result != 2)
-            rollback(SBUF("Notary: Could not fetch sfSignerWeight from sfSignerEntry."), 80);
-
-        // convert weight buffer to an integer
-        signer_weight = UINT16_FROM_BUF(buf);
-
-        // some debug output to see the progress
-        TRACEVAR(signer_weight);
-        TRACEHEX(account_field);
-        TRACEHEX(signer_account);
-
-        // compare the signer account for this signer entry against the originating transaction (sending) account
-        int equal = 0;
-        BUFFER_EQUAL_GUARD(equal, signer_account, 20, account_field, 20, 8);
-        if (equal)
+        int same = 0;
+        BUFFER_EQUAL_GUARD(same, signer_account, 20, sender, 20, MAX_SIGNERS);
+        if (same)
         {
-            // if the otxn account was in the signer list we can stop iterating
             found = i + 1;
+            signer_weight = UINT16_FROM_BUF(num);
             break;
         }
     }
-
-    // ensure the otxn account is authed
     if (!found)
-        rollback(SBUF("Notary: Your account was not present in the signer list."), 70);
+        NOPE("Notary: your account is not on the signer list.");
 
-    // execution to this point means the following:
-    // 1. the originating transaction (sending) account is authorized as one of the signers on the hook account
-    // 2. either an invoice ID or a memo was sent to the hook (but not both).
-
-    // if a memo was sent to the hook it must be mode 1 above (proposing a new multisign transaction)
-    if (memos_len > 0)
+    // ---- Mode 1: record the proposal ---------------------------------------------------------------------------
+    if (blob_len > 0)
     {
-        // this is a defensive check, it is actually never executed due to an identical condition above
-        if (invoice_id_len > 0)
-            rollback(SBUF("Notary: Incoming transaction with both invoice id and memo. Aborting."), 0);
+        // A transaction must at least have a TransactionType.
+        if (sto_subfield(blob, blob_len, sfTransactionType) < 0)
+            NOPE("Notary: the Blob is not a serialized transaction.");
 
-        // since our memos are in a buffer inside the hook (as opposed to being a slot) we use the sto api with it
-        // the sto apis probe into a serialized object returning offsets and lengths of subfields or array entries
-        int64_t   memo_lookup = sto_subarray(memos, memos_len, 0);
-        uint8_t*  memo_ptr = SUB_OFFSET(memo_lookup) + memos;
-        uint32_t  memo_len = SUB_LENGTH(memo_lookup);
+        // LastLedgerSequence must leave the other signers time to endorse.
+        int64_t lls = sto_subfield(blob, blob_len, sfLastLedgerSequence);
+        if (lls < 0 || SUB_LENGTH(lls) != 4 ||
+            UINT32_FROM_BUF(blob + SUB_OFFSET(lls)) < ledger_seq() + MINIMUM_FUTURE_LEDGER)
+            NOPE("Notary: LastLedgerSequence must be at least 60 ledgers ahead.");
 
-        // memos are nested inside an actual memo object, so we need to subfield
-        // equivalently in JSON this would look like memo_array[i]["Memo"]
-        memo_lookup = sto_subfield(memo_ptr, memo_len, sfMemo);
-        memo_ptr = SUB_OFFSET(memo_lookup) + memo_ptr;
-        memo_len = SUB_LENGTH(memo_lookup);
+        // The id of the proposal is the hash of the blob; the state key adds F as last nibble.
+        if (util_sha512h(SBUF(id), blob, blob_len) != 32)
+            NOPE("Notary: could not hash the Blob.");
+        id[31] = (id[31] & 0xF0U) + 0x0FU;
 
-        if (memo_lookup < 0)
-            rollback(SBUF("Notary: Incoming txn had a blank sfMemos, abort."), 1);
-
-        int64_t  format_lookup   = sto_subfield(memo_ptr, memo_len, sfMemoFormat);
-        uint8_t* format_ptr = SUB_OFFSET(format_lookup) + memo_ptr;
-        uint32_t format_len = SUB_LENGTH(format_lookup);
-
-        int is_unsigned_payload = 0;
-        BUFFER_EQUAL_STR_GUARD(is_unsigned_payload, format_ptr, format_len,     "unsigned/payload+1",   1);
-        if (!is_unsigned_payload)
-            accept(SBUF("Notary: Memo is an invalid format. Passing txn."), 50);
-
-        int64_t  data_lookup = sto_subfield(memo_ptr, memo_len, sfMemoData);
-        uint8_t* data_ptr = SUB_OFFSET(data_lookup) + memo_ptr;
-        uint32_t data_len = SUB_LENGTH(data_lookup);
-
-        if (data_len > MAX_MEMO_SIZE)
-            rollback(SBUF("Notary: Memo too large (4kib max)."), 4);
-
-        // inspect unsigned payload
-        // first check that sfTransactionType appears in the memo... if it doesn't then it can't be a transaction
-        int64_t txtype_lookup      = sto_subfield(data_ptr, data_len, sfTransactionType);
-        if (txtype_lookup < 0)
-            rollback(SBUF("Notary: Memo is invalid format. Should be an unsigned transaction."), 2);
-
-        // next check the lastLedgerSequence is sensibly set otherwise there will be no chance for the other signers
-        // to endorse the txn before it expires
-        int64_t  lls_lookup = sto_subfield(data_ptr, data_len, sfLastLedgerSequence);
-        uint8_t* lls_ptr = SUB_OFFSET(lls_lookup) + data_ptr;
-        uint32_t lls_len = SUB_LENGTH(lls_lookup);
-
-        // check for expired txn
-        if (lls_len != 4 || UINT32_FROM_BUF(lls_ptr) < ledger_seq() + MINIMUM_FUTURE_LEDGER)
-            rollback(SBUF("Notary: Provided txn blob expires too soo (LastLedgerSeq)."), 3);
-
-        // compute txn hash, this becomes the ID passed as an invoice ID by the endorsers (other signers)
-        if (util_sha512h(SBUF(invoice_id), data_ptr, data_len) < 0)
-            rollback(SBUF("Notary: Could not compute sha512 over the submitted txn."), 5);
-
-        TRACEHEX(invoice_id);
-
-        invoice_id[31] = ( invoice_id[31] & 0xF0U ) + 0x0FU;
-
-        // write blob to state... the state key for the txn blob is the txn ID with `F` as the last nibble.
-        int64_t ssrv = state_set(data_ptr, data_len, SBUF(invoice_id));
-	if (ssrv < 0) {
-	    TRACEVAR(ssrv);
-            rollback(SBUF("Notary: Could not write txn to hook state."), 6);
-	}
+        if (state_set(blob, blob_len, SBUF(id)) < 0)
+            NOPE("Notary: could not store the proposal in hook state.");
     }
+    // Mode 1 now continues as an endorsement of its own proposal.
 
-    // execution to here means if we were in mode 1 we now drop into mode 2, because the proposed txn is now recorded
-    // so we simply treat this as an endorsement (mode 2) from here...
+    // ---- Record this signer's weight --------------------------------------------------------------------------
+    id[31] = (id[31] & 0xF0U) + found;
+    UINT16_TO_BUF(num, signer_weight);
+    if (state_set(num, 2, SBUF(id)) != 2)
+        NOPE("Notary: could not record the signature in hook state.");
 
-    // record the signature... the state key for this is the txn ID with (1 + signer number) as the last nibble
-    invoice_id[31] = ( invoice_id[31] & 0xF0U ) + found;
-    
-    // the value we record against the signer is his/her signer weight at the time the endorsement or proposal happened
-    UINT16_TO_BUF(buf, signer_weight);
-    if (state_set(buf, 2, SBUF(invoice_id)) != 2)
-        rollback(SBUF("Notary: Could not write signature to hook state."), 7);
-    
-
-    // check if we have managed to achieve a quorum by loading all current signatures and adding together the signer
-    // weights (stored as the HookState values)
+    // ---- Quorum? --------------------------------------------------------------------------------------------
     uint32_t total = 0;
-    for (uint8_t i = 1; GUARD(8), i < 9; ++i)
+    for (uint8_t i = 1; GUARD(MAX_SIGNERS), i <= MAX_SIGNERS; ++i)
     {
-        invoice_id[31] = ( invoice_id[31] & 0xF0U ) + i;
-        if (state(buf, 2, SBUF(invoice_id)) == 2)
-            total += UINT16_FROM_BUF(buf);
+        id[31] = (id[31] & 0xF0U) + i;
+        if (state(num, 2, SBUF(id)) == 2)
+            total += UINT16_FROM_BUF(num);
     }
+    id[31] = (id[31] & 0xF0U) + 0x0FU;
 
-    TRACEVAR(total);
-    TRACEVAR(signer_quorum);
-
-    // if we haven't achieved a quorum we will output the ID as the hook result string so it can be given to the
-    // other endorsers
     if (total < signer_quorum)
     {
-        uint8_t header[] = "Notary: Accepted waiting for other signers...: ";
-        uint8_t returnval[112]; 
-        uint8_t* ptr = returnval;
-        for (int i = 0; GUARD(47), i < 47; ++i)
-            *ptr++ = header[i];
-        for (int i = 0; GUARD(32),i < 32; ++i)
+        // Return the id as uppercase hex in the hook result so it can be copied from the IDE log.
+        uint8_t msg[HEADER_LEN + 64];
+        uint8_t* ptr = msg;
+        for (int i = 0; GUARD(HEADER_LEN), i < HEADER_LEN; ++i)
+            *ptr++ = HEADER[i];
+        for (int i = 0; GUARD(32), i < 32; ++i)
         {
-            uint8_t hi = (invoice_id[i] >> 4U);
-            uint8_t lo = (invoice_id[i] & 0xFU);
-
-            hi += ( hi > 9 ? ('A'-10) : '0' );
-            lo += ( lo > 9 ? ('A'-10) : '0' );
-            *ptr++ = hi;
-            *ptr++ = lo;
+            uint8_t hi = id[i] >> 4U;
+            uint8_t lo = id[i] & 0xFU;
+            *ptr++ = hi + (hi > 9 ? 'A' - 10 : '0');
+            *ptr++ = lo + (lo > 9 ? 'A' - 10 : '0');
         }
-        accept(SBUF(returnval), 0);
+        accept(SBUF(msg), 0);
     }
 
-    // execution to here means we achieved a quorum on a proposed txn
-    // therefore we must now emit the txn then garbage collect the old state
-    int should_emit = 1;
-    invoice_id[31] = ( invoice_id[31] & 0xF0U ) + 0x0FU;
-    tx_len = state(SBUF(tx_blob), SBUF(invoice_id));
+    // ---- Quorum reached: prepare the transaction and emit it ----------------------------------------------
+    // Both modes load the proposal from state, so there is one code path from here on.
+    tx_len = state(tx_blob, WORK_SIZE, SBUF(id));
     if (tx_len < 0)
-        should_emit = 0;
+        NOPE("Notary: the proposal is missing from hook state.");
 
-    // delete everything from state before emitting
-    state_set(0, 0, SBUF(invoice_id));
-    for (uint8_t i = 1; GUARD(8), i < 9; ++i)
-    {
-        invoice_id[31] = ( invoice_id[31] & 0xF0U ) + i;
-        state_set(0, 0, SBUF(invoice_id));
-    }
-    
-    if (!should_emit)
-        rollback(SBUF("Notary: Tried to emit multisig txn but it was missing"), 1);
-
-    // blob exists, check expiry
-    int64_t  lls_lookup = sto_subfield(tx_blob, tx_len, sfLastLedgerSequence);
-    uint8_t* lls_ptr = SUB_OFFSET(lls_lookup) + tx_blob;
-    uint32_t lls_len = SUB_LENGTH(lls_lookup);
-    if (lls_len != 4)
-        rollback(SBUF("Notary: Was about to emit txn but it doesn't have LastLedgerSequence"), 1);
-
-    uint32_t lls_old = UINT32_FROM_BUF(lls_ptr);
+    int64_t lls = sto_subfield(tx_blob, tx_len, sfLastLedgerSequence);
+    if (lls < 0 || SUB_LENGTH(lls) != 4)
+        NOPE("Notary: the proposal has no LastLedgerSequence.");
+    uint32_t lls_old = UINT32_FROM_BUF(tx_blob + SUB_OFFSET(lls));
     if (lls_old < ledger_seq())
-        rollback(SBUF("Notary: Was about to emit txn but it's too old now"), 1);
+        NOPE("Notary: the proposal expired before it could be emitted.");
 
-    // modify the txn for emission
-    // we need to remove sfSigners if it exists
-    // we need to zero sfSequence sfSigningPubKey and sfTxnSignature
-    // we need to correctly set sfFirstLedgerSequence
+    // Delete everything from state first; a later rollback restores it.
+    purge(id);
 
-    // first do the erasure, this can fail if there is no such sfSigner field, so swap buffers to immitate success
-    
-    uint8_t  buffer[MAX_MEMO_SIZE];
-    uint8_t* buffer2 = buffer;
-    uint8_t* buffer1 = tx_blob;
+    // `cur` is the latest version of the transaction, `oth` the buffer the next step writes to.
+    uint8_t scratch[WORK_SIZE];
+    uint8_t* cur = tx_blob;
+    uint8_t* oth = scratch;
 
-    result = sto_erase(buffer2, MAX_MEMO_SIZE, buffer1, tx_len, sfSigners);
+    // 1. Remove sfSigners and sfTxnSignature if present (erase fails when the field is absent, which is fine).
+    result = sto_erase(oth, WORK_SIZE, cur, tx_len, sfSigners);
     if (result > 0)
+    {
         tx_len = result;
-    else
-        BUFFER_SWAP(buffer1, buffer2);
+        BUFFER_SWAP(cur, oth);
+    }
+    result = sto_erase(oth, WORK_SIZE, cur, tx_len, sfTxnSignature);
+    if (result > 0)
+    {
+        tx_len = result;
+        BUFFER_SWAP(cur, oth);
+    }
 
-    // next zero sfSequence
-    uint8_t zeroed[6];
-    CLEARBUF(zeroed);
-    zeroed[0] = 0x24U; // this is the lead byte for sfSequence
+    // 2. A hook-emitted transaction has Sequence 0 and a signing key of 33 zero bytes.
+    uint8_t field[35];
+    CLEARBUF(field);
+    field[0] = 0x24U; // sfSequence header, then 4 zero bytes
+    EMPLACE(sfSequence, field, 5, "Notary: could not set sfSequence.", 20);
+    field[0] = 0x73U; // sfSigningPubKey header, then length 0x21 (33) and 33 zero bytes
+    field[1] = 0x21U;
+    EMPLACE(sfSigningPubKey, field, 35, "Notary: could not set sfSigningPubKey.", 22);
 
-    tx_len = sto_emplace(buffer1, MAX_MEMO_SIZE, buffer2, tx_len, zeroed, 5, sfSequence);
-    if (tx_len <= 0)
-        rollback(SBUF("Notary: Emplacing sfSequence failed."), 1);
-
-
-    // next set sfTxnSignature to 0
-    zeroed[0] = 0x74U; // lead byte for sfTxnSignature, next byte is length which is 0
-    tx_len = sto_emplace(buffer2, MAX_MEMO_SIZE, buffer1, tx_len, zeroed, 2, sfTxnSignature);
-    TRACEVAR(tx_len);
-    if (tx_len <= 0)
-        rollback(SBUF("Notary: Emplacing sfTxnSignature failed."), 1);
-    
-    // next set sfSigningPubKey to 0
-    zeroed[0] = 0x73U;  // this is the lead byte for sfSigningPubkey, note that the next byte is 0 which is the length
-    tx_len = sto_emplace(buffer1, MAX_MEMO_SIZE, buffer2, tx_len, zeroed, 2, sfSigningPubKey);
-    TRACEVAR(tx_len);
-    if (tx_len <= 0)
-        rollback(SBUF("Notary: Emplacing sfSigningPubKey failed."), 1);
-
-    // finally set FirstLedgerSeq appropriately
+    // 3. The emission window: FirstLedgerSequence is the next ledger, LastLedgerSequence at most 4 later.
     uint32_t fls = ledger_seq() + 1;
-    zeroed[0] = 0x20U;
-    zeroed[1] = 0x1AU;
-    UINT32_TO_BUF(zeroed + 2, fls);
-    tx_len = sto_emplace(buffer2, MAX_MEMO_SIZE, buffer1, tx_len, zeroed, 6, sfFirstLedgerSequence);
-    
-    if (tx_len <= 0)
-        rollback(SBUF("Notary: Emplacing sfFirstLedgerSequence failed."), 1);
+    field[0] = 0x20U;
+    field[1] = 0x1AU; // sfFirstLedgerSequence
+    UINT32_TO_BUF(field + 2, fls);
+    EMPLACE(sfFirstLedgerSequence, field, 6, "Notary: could not set sfFirstLedgerSequence.", 23);
 
     uint32_t lls_new = fls + 4;
-    if (lls_old > lls_new) {
-        trace("fixing", 6, buffer2, tx_len, 1);
-
-        tx_len = sto_erase(buffer1, MAX_MEMO_SIZE, buffer2, tx_len, sfLastLedgerSequence);
-        if (tx_len <= 0)
-            rollback(SBUF("Notary: Erasing sfLastLedgerSequence failed."), 1);
-      
-        zeroed[1] = 0x1BU;
-        UINT32_TO_BUF(zeroed + 2, lls_new);
-        tx_len = sto_emplace(buffer2, MAX_MEMO_SIZE, buffer1, tx_len, zeroed, 6, sfLastLedgerSequence);
-        if (tx_len <= 0)
-	    rollback(SBUF("Notary: Emplacing sfLastLedgerSequence failed."), 1);
+    if (lls_old > lls_new)
+    {
+        field[1] = 0x1BU; // sfLastLedgerSequence
+        UINT32_TO_BUF(field + 2, lls_new);
+        EMPLACE(sfLastLedgerSequence, field, 6, "Notary: could not set sfLastLedgerSequence.", 24);
     }
 
-    // finally add emit details
+    // 4. Emit details prove the transaction was emitted by this hook.
     uint8_t emitdet[138];
     result = etxn_details(SBUF(emitdet));
-
     if (result < 0)
-        rollback(SBUF("Notary: EmitDetails failed to generate."), 1);
+        NOPE("Notary: could not generate EmitDetails.");
+    EMPLACE(sfEmitDetails, emitdet, result, "Notary: could not set sfEmitDetails.", 25);
 
-    tx_len = sto_emplace(buffer1, MAX_MEMO_SIZE, buffer2, tx_len, emitdet, result, sfEmitDetails);
-    if (tx_len < 0)
-        rollback(SBUF("Notary: Emplacing sfEmitDetails failed."), 1);
-
-    // replace fee with something currently appropriate
-    uint8_t fee[ENCODE_DROPS_SIZE];
-    uint8_t* fee_ptr = fee; // this ptr is incremented by the macro, so just throw it away
-    int64_t fee_to_pay = etxn_fee_base(buffer1, tx_len);
-    if (fee_to_pay < 0)
-        rollback(SBUF("Notary: Computing sfFee failed."), 1);
-      
-    ENCODE_DROPS(fee_ptr, fee_to_pay, amFEE);
-    tx_len = sto_emplace(buffer2, MAX_MEMO_SIZE, buffer1, tx_len, SBUF(fee), sfFee);
-    
-    if (tx_len <= 0)
-        rollback(SBUF("Notary: Emplacing sfFee failed."), 1);
+    // 5. Fee for an emitted transaction is computed by the hook API from the final transaction.
+    //    sfFee is 0x68 followed by the 8 byte native amount (top two bits 01 mark "native, positive").
+    int64_t fee = etxn_fee_base(cur, tx_len);
+    if (fee < 0)
+        NOPE("Notary: could not compute the emit fee.");
+    field[0] = 0x68U;
+    field[1] = 0x40U + ((fee >> 56) & 0x3FU);
+    field[2] = (fee >> 48) & 0xFFU;
+    field[3] = (fee >> 40) & 0xFFU;
+    field[4] = (fee >> 32) & 0xFFU;
+    field[5] = (fee >> 24) & 0xFFU;
+    field[6] = (fee >> 16) & 0xFFU;
+    field[7] = (fee >> 8) & 0xFFU;
+    field[8] = fee & 0xFFU;
+    EMPLACE(sfFee, field, 9, "Notary: could not set sfFee.", 26);
 
     uint8_t emithash[32];
-    int64_t erv = emit(SBUF(emithash), buffer2, tx_len);
-    if (erv < 0) {
-        TRACEVAR(erv);
-        accept(SBUF("Notary: All conditions met but emission failed: proposed txn was malformed."), 1);
-    }
+    int64_t erv = emit(SBUF(emithash), cur, tx_len);
+    if (erv < 0)
+        NOPE("Notary: quorum reached but emission failed, the proposed transaction is malformed.");
 
-    accept(SBUF("Notary: Emitted multisigned txn"), 0);
+    DONE("Notary: emitted multisigned txn");
     return 0;
 }

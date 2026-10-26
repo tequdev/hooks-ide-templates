@@ -37,5 +37,6 @@ describe("starter", () => {
     expect(r.engineResult).toBe("tesSUCCESS");
     expect(r.executions).toHaveLength(1);
     expect(r.executions[0].result).toBe("accept");
+    expect(r.executions[0].message).toBe("Starter: accepted");
   });
 });

@@ -49,8 +49,7 @@ int64_t hook(uint32_t reserved)
         rollback(SBUF("Blacklist: \"op\" must be 01 (block) or 00 (unblock)."), 7);
 
     // state key: the account id right-aligned in 32 zero bytes (firewall.c builds the same key)
-    uint8_t key[32];
-    CLEARBUF(key);
+    uint8_t key[32] = {0};
     BYTES20_TO_BUF(key + 12, acc);
 
     if (op[0] == 1)

@@ -35,8 +35,7 @@ int64_t hook(uint32_t reserved)
         rollback(SBUF("Firewall: \"blaccid\" parameter must be 20 bytes."), 5);
 
     // same key shape as blacklist.c: account id right-aligned in 32 zero bytes
-    uint8_t key[32];
-    CLEARBUF(key);
+    uint8_t key[32] = {0};
     BYTES20_TO_BUF(key + 12, sender);
 
     uint8_t status[1];

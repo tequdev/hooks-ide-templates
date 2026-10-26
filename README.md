@@ -1,19 +1,45 @@
 # Hooks IDE templates
 
 Source of the example Hooks offered as templates in the
-[Xahau Hooks Builder](https://github.com/Xahau/xrpl-hooks-ide) (Starter,
-Firewall, Notary, Carbon, Peggy).
+[Xahau Hooks Builder](https://github.com/Xahau/xrpl-hooks-ide): Starter,
+Firewall, Notary, Carbon and Peggy.
+
+Every template is compiled with the IDE's own toolchain
+([hooks-compiler](https://github.com/tequdev/hooks-compiler)) against the
+headers the IDE bundles, installed on a standalone Xahau node and exercised
+end to end, locally and in CI.
 
 ## Layout
 
 - `templates/<name>/` – one directory per template: the Hook source, its
   README and any helper scripts, exactly as the IDE presents them.
-- `headers/` – the shared Hook API headers the IDE adds to every template.
+- `headers/` – the Hook API headers the IDE bundles with every template
+  (xahaud's `hook/*.h`).
+- `test/` – one Vitest file per template plus `helpers.ts` (compile, install,
+  submit, decode `HookExecutions`).
+- `scripts/` – `build-all.mjs` compiles every template; `node-up.sh` /
+  `node-down.sh` run a standalone xahaud in Docker through `xrpld-lab`.
 
-## Origin
+## Develop
 
-This initial commit imports the files verbatim from the GitHub Gists the IDE
-used until now:
+Requires Node 22, pnpm, Docker and Python 3 (for `xrpld-lab`).
+
+```sh
+pnpm install
+pnpm build        # compile templates/*/*.c into build/*.wasm
+pnpm node:up      # start the standalone node (first run downloads xahaud)
+pnpm test         # install each template on the node and run its scenarios
+pnpm node:down
+```
+
+`.env` sets `XAHAU_ENV=standalone` so `@xahau/hooks-toolkit` closes ledgers
+itself; without it every submit waits for a consensus that never comes.
+
+## History
+
+The first commit imports the files verbatim from the GitHub Gists the IDE
+used until now, so the refactor to the current Hooks conventions can be read
+commit by commit:
 
 | Template | Gist |
 |---|---|

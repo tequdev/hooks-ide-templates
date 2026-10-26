@@ -1,0 +1,31 @@
+{
+  "name": "hooks-ide-templates",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.12.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build-all.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "node:up": "bash scripts/node-up.sh",
+    "node:down": "bash scripts/node-down.sh"
+  },
+  "dependencies": {
+    "@xahau/hooks-toolkit": "3.0.0",
+    "hooks-compiler": "0.2.0",
+    "xahau": "4.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.3",
+    "@tsconfig/node22": "22.0.6",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  }
+}

@@ -19,7 +19,7 @@ signers are supported. The proposer's own weight counts as the first signature.
 1. Make sure Hooks Builder has three accounts: Alice (the notary), Bob and Carol (the signers).
 2. Send a `SignerListSet` from Alice with `SignerQuorum` 2 and Bob and Carol as signers with weight 1 each.
    The transaction pane has a `SignerListSet` template.
-3. Compile `notary.c` and deploy it to Alice with HookOn `Invoke` (the `@invoke` tag preselects it).
+3. Compile `notary.c` and deploy it to Alice. The `@on_incoming ttINVOKE` tag preselects HookOn `Invoke` for incoming transactions.
 4. Run `propose.js`. Fill in Alice as the notary account, a destination, an amount in drops and a
    `LastLedgerSequence` (current ledger + at least 60). It prints the hex Blob.
 5. Open the debug stream filtered on Alice. Send an `Invoke` from Bob to Alice and paste the Blob into its `Blob`

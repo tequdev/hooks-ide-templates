@@ -29,7 +29,7 @@ Peggy is an automated, over-collateralised stable coin. Send XAH to the hook acc
      "LimitAmount": { "currency": "USD", "issuer": "<Carol address>", "value": "10000000000" }
    }
    ```
-5. Compile `peggy.c` and deploy it on Carol with HookOn `Payment` and the parameters `oracle_lo` and `oracle_hi` set to the two hex ids from step 2.
+5. Compile `peggy.c` and deploy it on Carol (HookOn `Payment` for incoming transactions and HookCanEmit `Payment` are preselected) with the parameters `oracle_lo` and `oracle_hi` set to the two hex ids from step 2.
 6. Send a Payment of 100 XAH from Alice to Carol.
 7. Open the debug stream filtered on Carol. The hook accepts with "Sent you PUSD!" and emits a Payment of about 2466.66 USD from Carol to Alice. You can see the emitted payment in the explorer too.
 8. To redeem, send PUSD from Alice back to Carol, for example 1000 USD issued by Carol. The hook emits the matching XAH.

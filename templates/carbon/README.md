@@ -7,7 +7,7 @@ Carbon sends a percentage of every outgoing payment to a beneficiary account. Wh
 1. Make sure you have at least three accounts: Alice (the hook account), Bob and Carol (the beneficiary).
 2. Run `decode.js` with Carol's address to get her 20-byte AccountID as hex (parameter values must be hex).
 3. Compile `carbon.c`.
-4. Deploy it to Alice with HookOn = Payment and the parameter `carbon_acc` = Carol's hex AccountID.
+4. Deploy it to Alice. The tags preselect HookOn `Payment` for outgoing transactions and HookCanEmit `Payment`; set the parameter `carbon_acc` = Carol's hex AccountID.
 5. From the transaction pane, send a Payment from Alice to Bob of more than 0.1 XAH.
 6. Open the debug stream filtered on Carol. You will see the hook trace and the emitted payment to Carol arriving a ledger later.
 

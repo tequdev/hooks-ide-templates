@@ -3,7 +3,8 @@
  *
  * Original author: Richard Holland
  *
- * @invoke ttINVOKE
+ * @name Notary
+ * @on_incoming ttINVOKE
  */
 #include "hookapi.h"
 

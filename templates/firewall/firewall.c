@@ -4,9 +4,10 @@
  * Firewall: rejects incoming payments from accounts listed in the state of a
  * blacklist hook (blacklist.c) installed on another account.
  *
- * @invoke ttPAYMENT
- * @field blaccid AccountID of the account running the blacklist hook (20-byte hex)
- * @field blns Hook namespace of the blacklist hook (32-byte hex)
+ * @name Firewall
+ * @on_incoming ttPAYMENT
+ * @param blaccid AccountID of the account running the blacklist hook (20-byte hex)
+ * @param blns Hook namespace of the blacklist hook (32-byte hex)
  */
 
 int64_t hook(uint32_t reserved)

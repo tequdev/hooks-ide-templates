@@ -1,11 +1,8 @@
 const rac = require("ripple-address-codec");
 
 /**
- * @input {Account} a Account
+ * Converts an r-address to the 20-byte AccountID hex used in hook parameters.
+ * @input {Account} account Account to convert
  */
 
-const a = process.env.a,
-      b = rac.decodeAccountID(a),
-      h = b.toString('hex').toUpperCase();
-
-console.log(h);
+console.log(rac.decodeAccountID(process.env.account).toString("hex").toUpperCase());

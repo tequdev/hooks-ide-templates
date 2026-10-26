@@ -1,45 +1,56 @@
 #include "hookapi.h"
 
 /**
- * @field blaccid Set to binary account
- * @field blns Set to the blacklist hook namespace
+ * Firewall: rejects incoming payments from accounts listed in the state of a
+ * blacklist hook (blacklist.c) installed on another account.
+ *
+ * @invoke ttPAYMENT
+ * @field blaccid AccountID of the account running the blacklist hook (20-byte hex)
+ * @field blns Hook namespace of the blacklist hook (32-byte hex)
  */
 
 int64_t hook(uint32_t reserved)
 {
-    GUARD(1);
+    _g(1, 1);
 
-    // fetch the originating account ID
-    uint8_t otxn_accid[20];
-    if (otxn_field(otxn_accid, 20, sfAccount) != 20)
-        rollback(SBUF("Firewall: Could not fetch sfAccount from originating transaction!!!"), 1);
+    // the firewall filters payments only
+    if (otxn_type() != ttPAYMENT)
+        accept(SBUF("Firewall: not a payment, passing."), 1);
+
+    uint8_t sender[20], me[20];
+    if (otxn_field(SBUF(sender), sfAccount) != 20)
+        rollback(SBUF("Firewall: could not read the sender."), 2);
+
+    // our own outgoing payments are never blocked
+    hook_account(SBUF(me));
+    if (BUFFER_EQUAL_20(sender, me))
+        accept(SBUF("Firewall: outgoing payment, passing."), 3);
 
     uint8_t blacklist_ns[32];
-    int64_t prv = hook_param(SBUF(blacklist_ns), (uint32_t)"blns", 4);
-    if (prv != sizeof(blacklist_ns))
-    {
-        TRACEVAR(prv);
-        rollback(SBUF("Firewall: \"blns\" parameter missing"), 5);
-    }
+    if (hook_param(SBUF(blacklist_ns), "blns", 4) != 32)
+        rollback(SBUF("Firewall: \"blns\" parameter must be 32 bytes."), 4);
 
-    uint8_t blacklist_accid[32];
-    prv = hook_param(SBUF(blacklist_accid), (uint32_t)"blaccid", 7);
-    if (prv < 20)
-    {
-        TRACEVAR(prv);
-        rollback(SBUF("Firewall: \"blaccid\" parameter missing"), 10);
-    }
+    uint8_t blacklist_accid[20];
+    if (hook_param(SBUF(blacklist_accid), "blaccid", 7) != 20)
+        rollback(SBUF("Firewall: \"blaccid\" parameter must be 20 bytes."), 5);
 
-    // look up the account ID in the foreign state (blacklist account's hook state)
-    uint8_t blacklist_status[1] = { 0 };
-    int64_t lookup = state_foreign(SBUF(blacklist_status), SBUF(otxn_accid), SBUF(blacklist_ns), blacklist_accid, 20);
-    if (lookup == INVALID_ACCOUNT)
-        trace(SBUF("Firewall: Warning specified blacklist account does not exist."), 0, 0, 0);
+    // same key shape as blacklist.c: account id right-aligned in 32 zero bytes
+    uint8_t key[32];
+    CLEARBUF(key);
+    BYTES20_TO_BUF(key + 12, sender);
 
-    if (blacklist_status[0] == 0)
-        accept(SBUF("Firewall: Allowing transaction."), 0);
+    uint8_t status[1];
+    int64_t lookup = state_foreign(SBUF(status), SBUF(key), SBUF(blacklist_ns), SBUF(blacklist_accid));
 
-    rollback(SBUF("Firewall: Blocking transaction from blacklisted account."), 1);
+    if (lookup == DOESNT_EXIST)
+        accept(SBUF("Firewall: sender is not blacklisted, allowing."), 6);
+
+    if (lookup == 1 && status[0] == 1)
+        rollback(SBUF("Firewall: blocking transaction from blacklisted account."), 7);
+
+    // INVALID_ACCOUNT (blacklist account missing), a malformed value, or any other error
+    TRACEVAR(lookup);
+    rollback(SBUF("Firewall: could not read the blacklist."), 8);
 
     return 0;
 }

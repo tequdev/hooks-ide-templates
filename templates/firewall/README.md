@@ -1,38 +1,29 @@
 # Firewall
 
-Firewall is an example of cooperating hooks: firewall hook instances filter incoming payments, based on shared state maintained by blacklist hook.
+Two cooperating hooks. `blacklist.c` keeps a list of blocked accounts in its own hook state. `firewall.c` runs on a protected account and rejects incoming payments from any account on that list. It reads the list with `state_foreign`, so the protected account never holds a copy of it.
 
-To cooperate, the hooks need information about each other, which must be obtained before deploying them, because it's passed to them as [install-time parameters](https://xrpl-hooks.readme.io/docs/parameters).
+Both hooks need to know about each other before deployment, so that information is passed as [install-time parameters](https://docs.xahau.tools).
 
-to test:
-- make sure Hooks Builder has at least 4 accounts: Alice, Bob, Carol and Carlos
-- run key.js to get a public key of the blacklist admin account, e.g. Alice; it asks for that account's secret key
-	- verify the script is using it just to derive the public key
-	- if you don't believe the script, or its dependencies, do the conversion in a trusted environment
-- compile blacklist.c and deploy it to Bob account
-	- for ttPAYMENT + ttACCOUNT_SET
-	- noting the hook namespace and saving it somewhere
-        - with "admin" param set to Alice public key obtained above
-- run block-unblock.js to block an account; the script requires 4 parameters:
-	1. admin is the account authorized to sign blacklist updates, i.e. Alice; the script needs its private key
-	2. blacklist is the account sending AccountSet, i.e. Bob; its private key is used to sign that transaction
-	3. suspect is the 3rd-party account to be blocked or unblocked, i.e. Carlos; its private key is not needed
-	4. execution mode should be set to 1, to block
-- run decode.js to convert Bob account to binary form (the hook could do that, but it's extra computation that doesn't need to be replicated on chain) and save it somewhere
-	- enter Bob account as the script parameter
-- compile firewall.c and deploy it to Carol account, with 2 parameters:
-	1. "blaccid" parameter set to Bob binary account
-	2. and "blns" parameter set to the blacklist hook namespace
-- set up payment transaction from Carlos to Carol
-- open debug stream filtered on Carol
-- run the transaction, see it rejected:
-	- "Firewall: Blocking transaction from blacklisted account." in the debug stream
-	- "[tecHOOK_REJECTED] Rejected by hook on sending or receiving account." in the development log
-- run block-unblock.js to unblock Carlos account; the parameters are mostly as before:
-	1. admin is the account authorized to sign blacklist updates, i.e. Alice; the script needs its private key
-	2. blacklist is the account sending AccountSet, i.e. Bob; its private key is used to sign that transaction
-	3. suspect is the 3rd-party account to be blocked or unblocked, i.e. Carlos; its private key is not needed
-	4. execution mode should be set to 0, to unblock
-- repeat the payment transaction, see it succeed:
-	- "Firewall: Allowing transaction." in the debug stream
-	- "[tesSUCCESS] The transaction was applied. Only final in a validated ledger." in the development log
+## How it works
+
+- The blacklist admin sends an **Invoke** to the blacklist account with two HookParameters: `acc` (the 20-byte AccountID to change) and `op` (`01` block, `00` unblock).
+- The transaction signature already proves who sent it, so `blacklist.c` only checks that the sender is the `admin` parameter (or the hook account itself when `admin` is not set).
+- The state key is the AccountID right-aligned in 32 zero bytes; the value is a single byte `01`. Unblocking deletes the entry.
+- `firewall.c` builds the same key for the payment sender and looks it up in the blacklist account's state, using the blacklist namespace.
+
+## Try it in the Hooks Builder
+
+1. Make sure you have at least 4 accounts: Alice (admin), Bob (blacklist hook), Carol (firewall hook) and Carlos (suspect).
+2. Run `decode.js` for Alice and for Bob to get their hex AccountIDs. Parameter values must be hex.
+3. Compile `blacklist.c` and deploy it to Bob with HookOn **Invoke**. Set `admin` to Alice's hex AccountID, or leave it empty to let Bob manage his own list. Note the HookNamespace.
+4. Run `decode.js` for Carlos as well.
+5. Compile `firewall.c` and deploy it to Carol with HookOn **Payment** and two parameters: `blaccid` = Bob's hex AccountID, `blns` = the blacklist hook namespace (32-byte hex).
+6. In the transaction pane send an **Invoke** from Alice to Bob with HookParameters `acc` = Carlos's hex AccountID and `op` = `01`. The debug stream shows "Blacklist: blocked account."
+7. Send a **Payment** from Carlos to Carol with the debug stream filtered on Carol. It is rejected:
+   - "Firewall: blocking transaction from blacklisted account." in the debug stream
+   - "[tecHOOK_REJECTED] Rejected by hook on sending or receiving account." in the development log
+8. Send the Invoke again with `op` = `00`. The payment from Carlos now succeeds.
+
+## What changed from the original
+
+The original `blacklist.c` accepted a signed-memo triple (payload, signature, public key), verified it with `util_verify` and kept a replay sequence number in state. Invoke transactions make all of that unnecessary: the ledger already authenticates the sender, and the transaction sequence number already prevents replays. The `key.js` and `block-unblock.js` scripts are gone for the same reason. `firewall.c` keeps its logic but now only looks at payments, checks the result of the foreign state lookup properly, and no longer lets outgoing payments be blocked.
